@@ -62,10 +62,17 @@ enum riscv_csr_class
 
   CSR_CLASS_I,
   CSR_CLASS_I_32,	/* rv32 only */
+  CSR_CLASS_H,		/* hypervisor CSR */
+  CSR_CLASS_H_32,	/* hypervisor CSR, rv32 only.  */
   CSR_CLASS_F,		/* f-ext only */
   CSR_CLASS_ZKR,	/* zkr only */
   CSR_CLASS_V,		/* rvv only */
-  CSR_CLASS_DEBUG	/* debug CSR */
+  CSR_CLASS_DEBUG,	/* debug CSR */
+  CSR_CLASS_CLIC,	/* clic CSR */
+  CSR_CLASS_RNMI,	/* rnmi CSR */
+  CSR_CLASS_WORLDGUARD, /* world guard CSR */
+  CSR_CLASS_SSCOFPMF,	/* sscofpmf CSR */
+  CSR_CLASS_SSCOFPMF_32,/* sscofpmf CSR, rv32 only. */
 };
 
 /* This structure holds all restricted conditions for a CSR.  */
@@ -389,7 +396,7 @@ const char EXP_CHARS[] = "eE";
 
 /* Chars that mean this number is a floating point constant.
    As in 0f12.456 or 0d1.2345e12.  */
-const char FLT_CHARS[] = "rRsSfFdDxXpP";
+const char FLT_CHARS[] = "rRsSfFdDxXpPhH";
 
 /* Indicate we are already assemble any instructions or not.  */
 static bool start_assemble = false;
@@ -912,13 +919,29 @@ riscv_csr_address (const char *csr_name,
     case CSR_CLASS_F:
       extension = "f";
       break;
+    case CSR_CLASS_H_32:
+      rv32_only = (xlen == 32);
+      /* Fall through.  */
+    case CSR_CLASS_H:
+      need_check_version = true;
+      extension = "h";
+      break;
     case CSR_CLASS_ZKR:
       extension = "zkr";
       break;
     case CSR_CLASS_V:
       extension = "v";
       break;
+    case CSR_CLASS_SSCOFPMF_32:
+      rv32_only = (xlen == 32);
+      /* Fall through.  */
+    case CSR_CLASS_SSCOFPMF:
+      extension = "sscofpmf";
+      break;
     case CSR_CLASS_DEBUG:
+    case CSR_CLASS_CLIC:
+    case CSR_CLASS_RNMI:
+    case CSR_CLASS_WORLDGUARD:
       break;
     default:
       as_bad (_("internal: bad RISC-V CSR class (0x%x)"), csr_class);
@@ -1204,6 +1227,24 @@ validate_riscv_insn (const struct riscv_opcode *opc, int length)
 	      case '2': USE_BITS (OP_MASK_OP2, OP_SH_OP2); break;
 	      default:
 		goto unknown_validate_operand;
+	    }
+	  break;
+	case 'X':
+	  switch (*++oparg)
+	    {
+	    case 'd': USE_BITS (OP_MASK_RD, OP_SH_RD); break;
+	    case 't': USE_BITS (OP_MASK_RS2, OP_SH_RS2); break;
+	    case 'O':
+	      switch (*++oparg)
+		{
+		case '2': USE_BITS (OP_MASK_XO2, OP_SH_XO2); break;
+		case '1': USE_BITS (OP_MASK_XO1, OP_SH_XO1); break;
+		default:
+		  goto unknown_validate_operand;
+		}
+	      break;
+	    default:
+	      goto unknown_validate_operand;
 	    }
 	  break;
 	default:
@@ -1908,6 +1949,15 @@ macro (struct riscv_cl_insn *ip, expressionS *imm_expr,
       vector_macro (ip);
       break;
 
+    case M_FLH:
+      pcrel_load (rd, rs1, imm_expr, "flh",
+		  BFD_RELOC_RISCV_PCREL_HI20, BFD_RELOC_RISCV_PCREL_LO12_I);
+      break;
+    case M_FSH:
+      pcrel_store (rs2, rs1, imm_expr, "fsh",
+		   BFD_RELOC_RISCV_PCREL_HI20, BFD_RELOC_RISCV_PCREL_LO12_S);
+      break;
+
     default:
       as_bad (_("internal: macro %s not implemented"), ip->insn_mo->name);
       break;
@@ -2206,6 +2256,27 @@ riscv_csr_read_only_check (insn_t insn)
 
   return true;
 }
+
+#define UIMM_BITFIELD_VAL(S, E) (1 << ((E) - (S) + 1))
+#define EncodeUimmBitField(NAME, IP, EXPR, RELOC, ASARG, PERCENT, \
+			   START, END) \
+  do \
+    { \
+      if (my_getOpcodeExpression (EXPR, RELOC, ASARG, PERCENT) \
+	  || EXPR->X_op != O_constant \
+	  || EXPR->X_add_number < 0 \
+	  || EXPR->X_add_number >= UIMM_BITFIELD_VAL (START, END)) \
+	{ \
+	  as_bad (_("bad value for <bit-%s-%s> " \
+		    "field, value must be 0...%d"), \
+		  #START, #END, UIMM_BITFIELD_VAL (START, END)); \
+	  break; \
+	} \
+      INSERT_OPERAND (NAME, *IP, EXPR->X_add_number); \
+      EXPR->X_op = O_absent; \
+      ASARG = expr_end; \
+    } \
+  while (0);
 
 /* Return true if it is a privileged instruction.  Otherwise, return false.
 
@@ -3209,6 +3280,34 @@ riscv_ip (char *str, struct riscv_cl_insn *ip, expressionS *imm_expr,
 	      asarg = expr_end;
 	      continue;
 
+	    case 'X': /* SiFive */
+	      switch (*++oparg)
+		{
+		case 'd': /* Xd */
+		  EncodeUimmBitField
+		    (RD, ip, imm_expr, imm_reloc, asarg, p, 7, 11);
+		  continue;
+		case 't': /* Xt */
+		  EncodeUimmBitField
+		    (RS2, ip, imm_expr, imm_reloc, asarg, p, 20, 24)
+		  continue;
+		case 'O':
+		  switch (*++oparg)
+		    {
+		    case '2': /* XO2 */
+		      EncodeUimmBitField
+			(XO2, ip, imm_expr, imm_reloc, asarg, p, 26, 27);
+		      continue;
+		    case '1': /* XO1 */
+		      EncodeUimmBitField
+			(XO1, ip, imm_expr, imm_reloc, asarg, p, 26, 26);
+		      continue;
+		    }
+		default:
+		  goto unknown_riscv_ip_operand;
+		}
+	      break;
+
 	    default:
 	    unknown_riscv_ip_operand:
 	      as_fatal (_("internal: unknown argument type `%s'"),
@@ -3312,9 +3411,58 @@ md_assemble (char *str)
     append_insn (&insn, &imm_expr, imm_reloc);
 }
 
+static const char *
+bfloat16_md_atof (char *litP, int *sizeP)
+{
+  char *t;
+  LITTLENUM_TYPE words[MAX_LITTLENUMS];
+  FLONUM_TYPE generic_float;
+
+  t = atof_ieee_detail (input_line_pointer, 1, 8, words, &generic_float);
+
+  if (t)
+    input_line_pointer = t;
+  else
+    return _("invalid floating point number");
+
+  switch (generic_float.sign)
+    {
+      /* Is +Inf.  */
+      case 'P':
+	words[0] = 0x7f80;
+	break;
+
+      /* Is -Inf.  */
+      case 'N':
+	words[0] = 0xff80;
+	break;
+
+      /* Is NaN.  */
+      /* bfloat16 has two types of NaN - quiet and signalling.
+         Quiet NaN has bit[6] == 1 && faction != 0, whereas
+         signalling Nan's have bit[0] == 0 && fraction != 0.
+         Chose this specific encoding as it is the same form
+         as used by other IEEE 754 encodings in GAS.  */
+      case 0:
+	words[0] = 0x7fff;
+	break;
+
+      default:
+	break;
+    }
+
+    *sizeP = 2;
+    md_number_to_chars (litP, (valueT) words[0], sizeof (LITTLENUM_TYPE));
+    return NULL;
+}
+
 const char *
 md_atof (int type, char *litP, int *sizeP)
 {
+  /* Parse bfloat16 specially since it does not follow the IEEE standard.  */
+  if (type == 'b')
+    return bfloat16_md_atof (litP, sizeP);
+
   return ieee_md_atof (type, litP, sizeP, TARGET_BYTES_BIG_ENDIAN);
 }
 
@@ -3529,6 +3677,9 @@ md_apply_fix (fixS *fixP, valueT *valP, segT seg ATTRIBUTE_UNUSED)
     case BFD_RELOC_RISCV_SUB32:
     case BFD_RELOC_RISCV_SUB64:
     case BFD_RELOC_RISCV_RELAX:
+    /* cvt_frag_to_fill () has called output_leb128 ().  */
+    case BFD_RELOC_RISCV_SET_ULEB128:
+    case BFD_RELOC_RISCV_SUB_ULEB128:
       break;
 
     case BFD_RELOC_RISCV_TPREL_HI20:
@@ -4281,8 +4432,11 @@ s_riscv_leb128 (int sign)
   char *save_in = input_line_pointer;
 
   expression (&exp);
-  if (exp.X_op != O_constant)
-    as_bad (_("non-constant .%cleb128 is not supported"), sign ? 's' : 'u');
+  if (sign && exp.X_op != O_constant)
+    as_bad (_("non-constant .sleb128 is not supported"));
+  else if (!sign && exp.X_op != O_constant && exp.X_op != O_subtract)
+    as_bad (_(".uleb128 only supports constant or subtract expressions."));
+
   demand_empty_rest_of_line ();
 
   input_line_pointer = save_in;
@@ -4403,11 +4557,55 @@ riscv_set_public_attributes (void)
     riscv_write_out_attrs ();
 }
 
+/* Scan uleb128 subtraction expressions and insert fixups for them.
+   e.g., .uleb128 .L1 - .L0
+   Because relaxation may change the value of the subtraction, we
+   must resolve them at link-time.  */
+
+static void
+riscv_insert_uleb128_fixes (bfd *abfd ATTRIBUTE_UNUSED,
+			    asection *sec, void *xxx ATTRIBUTE_UNUSED)
+{
+  segment_info_type *seginfo = seg_info (sec);
+  struct frag *fragP;
+
+  subseg_set (sec, 0);
+
+  for (fragP = seginfo->frchainP->frch_root;
+       fragP; fragP = fragP->fr_next)
+    {
+      expressionS *exp, *exp_dup;
+
+      if (fragP->fr_type != rs_leb128  || fragP->fr_symbol == NULL)
+	continue;
+
+      exp = symbol_get_value_expression (fragP->fr_symbol);
+
+      if (exp->X_op != O_subtract)
+	continue;
+
+      /* Only unsigned leb128 can be handled.  */
+      gas_assert (fragP->fr_subtype == 0);
+      exp_dup = xmemdup (exp, sizeof (*exp), sizeof (*exp));
+      exp_dup->X_op = O_symbol;
+      exp_dup->X_op_symbol = NULL;
+
+      /* Insert relocations to resolve the subtraction at link-time.  */
+      fix_new_exp (fragP, fragP->fr_fix, 0,
+		   exp_dup, 0, BFD_RELOC_RISCV_SET_ULEB128);
+      exp_dup->X_add_symbol = exp->X_op_symbol;
+      fix_new_exp (fragP, fragP->fr_fix, 0,
+		   exp_dup, 0, BFD_RELOC_RISCV_SUB_ULEB128);
+    }
+}
+
 /* Called after all assembly has been done.  */
 
 void
 riscv_md_end (void)
 {
+  if (riscv_opts.relax)
+    bfd_map_over_sections (stdoutput, riscv_insert_uleb128_fixes, NULL);
   riscv_set_public_attributes ();
 }
 
@@ -4570,6 +4768,8 @@ static const pseudo_typeS riscv_pseudo_table[] =
   {"insn", s_riscv_insn, 0},
   {"attribute", s_riscv_attribute, 0},
   {"variant_cc", s_variant_cc, 0},
+  {"float16", float_cons, 'h'},
+  {"bfloat16", float_cons, 'b'},
 
   { NULL, NULL, 0 },
 };

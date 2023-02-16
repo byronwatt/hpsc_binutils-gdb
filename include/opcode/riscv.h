@@ -312,6 +312,12 @@ static const char * const riscv_pred_succ[16] =
 #define NVECR 32
 #define NVECM 1
 
+/* SiFive fields.  */
+#define OP_MASK_XO2		0x3
+#define OP_SH_XO2		26
+#define OP_MASK_XO1		0x1
+#define OP_SH_XO1		26
+
 /* ABI names for selected x-registers.  */
 
 #define X_RA 1
@@ -370,6 +376,10 @@ enum riscv_insn_class
   INSN_CLASS_F_OR_ZFINX,
   INSN_CLASS_D_OR_ZDINX,
   INSN_CLASS_Q_OR_ZQINX,
+  INSN_CLASS_ZFH,
+  INSN_CLASS_ZFHMIN,
+  INSN_CLASS_D_AND_ZFHMIN,
+  INSN_CLASS_Q_AND_ZFHMIN,
   INSN_CLASS_ZBA,
   INSN_CLASS_ZBB,
   INSN_CLASS_ZBC,
@@ -387,10 +397,19 @@ enum riscv_insn_class
   INSN_CLASS_ZKND_OR_ZKNE,
   INSN_CLASS_V,
   INSN_CLASS_ZVEF,
+  INSN_CLASS_ZVAMO,
+  INSN_CLASS_ZVLSSEG,
   INSN_CLASS_SVINVAL,
   INSN_CLASS_ZICBOM,
   INSN_CLASS_ZICBOP,
   INSN_CLASS_ZICBOZ,
+  INSN_CLASS_H,
+  INSN_CLASS_XSFVQMACCQOQ,
+  INSN_CLASS_XSFVQMACCDOD,
+  INSN_CLASS_XSFVFHBFMIN,
+  INSN_CLASS_XSFVFWNACCQQQ,
+  INSN_CLASS_XSFVFNRCLIPXFQF,
+  INSN_CLASS_XSFVCP,
 };
 
 /* This structure holds information for a particular instruction.  */
@@ -498,6 +517,8 @@ enum
   M_SEXTH,
   M_VMSGE,
   M_VMSGEU,
+  M_FLH,
+  M_FSH,
   M_NUM_MACROS
 };
 

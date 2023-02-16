@@ -38,6 +38,8 @@
    relocations for the debug info.  */
 static bfd_reloc_status_type riscv_elf_add_sub_reloc
   (bfd *, arelent *, asymbol *, void *, asection *, bfd *, char **);
+static bfd_reloc_status_type riscv_elf_ignore_reloc
+  (bfd *, arelent *, asymbol *, void *, asection *, bfd *, char **);
 
 /* The relocation table used for SHT_RELA sections.  */
 
@@ -870,6 +872,37 @@ static reloc_howto_type howto_table[] =
 	 0,				/* src_mask */
 	 0xffffffff,			/* dst_mask */
 	 false),			/* pcrel_offset */
+
+  /* The length of unsigned-leb128 is variable, just assume the
+     size is one byte here.  */
+  HOWTO (R_RISCV_SET_ULEB128,		/* type */
+	 0,				/* rightshift */
+	 0,				/* size */
+	 0,				/* bitsize */
+	 false,				/* pc_relative */
+	 0,				/* bitpos */
+	 complain_overflow_dont,	/* complain_on_overflow */
+	 riscv_elf_ignore_reloc,	/* special_function */
+	 "R_RISCV_SET_ULEB128",		/* name */
+	 false,				/* partial_inplace */
+	 0,				/* src_mask */
+	 0,				/* dst_mask */
+	 false),			/* pcrel_offset */
+  /* The length of unsigned-leb128 is variable, just assume the
+     size is one byte here.  */
+  HOWTO (R_RISCV_SUB_ULEB128,		/* type */
+	 0,				/* rightshift */
+	 0,				/* size */
+	 0,				/* bitsize */
+	 false,				/* pc_relative */
+	 0,				/* bitpos */
+	 complain_overflow_dont,	/* complain_on_overflow */
+	 riscv_elf_ignore_reloc,	/* special_function */
+	 "R_RISCV_SUB_ULEB128",		/* name */
+	 false,				/* partial_inplace */
+	 0,				/* src_mask */
+	 0,				/* dst_mask */
+	 false),			/* pcrel_offset */
 };
 
 /* A mapping from BFD reloc types to RISC-V ELF reloc types.  */
@@ -931,6 +964,8 @@ static const struct elf_reloc_map riscv_reloc_map[] =
   { BFD_RELOC_RISCV_SET16, R_RISCV_SET16 },
   { BFD_RELOC_RISCV_SET32, R_RISCV_SET32 },
   { BFD_RELOC_RISCV_32_PCREL, R_RISCV_32_PCREL },
+  { BFD_RELOC_RISCV_SET_ULEB128, R_RISCV_SET_ULEB128 },
+  { BFD_RELOC_RISCV_SUB_ULEB128, R_RISCV_SUB_ULEB128 },
 };
 
 /* Given a BFD reloc type, return a howto structure.  */
@@ -1032,6 +1067,21 @@ riscv_elf_add_sub_reloc (bfd *abfd,
   return bfd_reloc_ok;
 }
 
+/* Special handler for relocations which don't have to be relocated.
+   This function just simply return bfd_reloc_ok.  */
+
+static bfd_reloc_status_type
+riscv_elf_ignore_reloc (bfd *abfd ATTRIBUTE_UNUSED, arelent *reloc_entry,
+			asymbol *symbol ATTRIBUTE_UNUSED,
+			void *data ATTRIBUTE_UNUSED, asection *input_section,
+			bfd *output_bfd, char **error_message ATTRIBUTE_UNUSED)
+{
+  if (output_bfd != NULL)
+    reloc_entry->address += input_section->output_offset;
+
+  return bfd_reloc_ok;
+}
+
 /* Always add the IMPLICIT for the SUBSET.  */
 
 static bool
@@ -1050,6 +1100,19 @@ check_implicit_for_i (const char *implicit ATTRIBUTE_UNUSED,
   return (subset->major_version < 2
 	  || (subset->major_version == 2
 	      && subset->minor_version < 1));
+}
+
+/* Add the zve and zvl when the version of v is greater 1.0.  Add the
+   zvlsseg when the version of v is less than 1.0.  */
+
+static bool
+check_implicit_for_v (const char *implicit,
+		      riscv_subset_t *subset)
+{
+  if (strcmp (implicit, "zvlsseg") == 0)
+    return (subset->major_version == 0);
+  else
+    return (subset->major_version > 0);
 }
 
 /* Record all implicit information for the subsets.  */
@@ -1074,8 +1137,18 @@ static struct riscv_implicit_subset riscv_implicit_subsets[] =
   {"g", "zifencei",	check_implicit_always},
   {"q", "d",		check_implicit_always},
   {"v", "d",		check_implicit_always},
-  {"v", "zve64d",	check_implicit_always},
-  {"v", "zvl128b",	check_implicit_always},
+  {"v", "zvlsseg",	check_implicit_for_v},
+  {"v", "zve64d",	check_implicit_for_v},
+  {"v", "zvl128b",	check_implicit_for_v},
+  {"zvamo", "a",	check_implicit_always},
+  {"xsfvqmaccqoq", "zve32x", check_implicit_always},
+  {"xsfvqmaccqoq", "zvl256b", check_implicit_always},
+  {"xsfvqmaccdod", "zve32x", check_implicit_always},
+  {"xsfvqmaccdod", "zvl128b", check_implicit_always},
+  {"xsfvfhbfmin", "zve32f", check_implicit_always},
+  {"xsfvfwmaccqqq", "zve32f", check_implicit_always},
+  {"xsfvfwmaccqqq", "zvl256b", check_implicit_always},
+  {"xsfvfnrclipxfqf", "zve32f", check_implicit_always},
   {"zve64d", "d",	check_implicit_always},
   {"zve64d", "zve64f",	check_implicit_always},
   {"zve64f", "zve32f",	check_implicit_always},
@@ -1100,6 +1173,9 @@ static struct riscv_implicit_subset riscv_implicit_subsets[] =
   {"zvl64b", "zvl32b",		check_implicit_always},
   {"d", "f",		check_implicit_always},
   {"f", "zicsr",	check_implicit_always},
+  {"zfh", "f",		check_implicit_always},
+  {"zfh", "zicsr",	check_implicit_always},
+  {"zfh", "zfhmin",	check_implicit_always},
   {"zqinx", "zdinx",	check_implicit_always},
   {"zdinx", "zfinx",	check_implicit_always},
   {"zk", "zkn",		check_implicit_always},
@@ -1180,6 +1256,8 @@ static struct riscv_supported_ext riscv_supported_std_z_ext[] =
   {"zifencei",		ISA_SPEC_CLASS_20191213,	2, 0,  0 },
   {"zifencei",		ISA_SPEC_CLASS_20190608,	2, 0,  0 },
   {"zihintpause",	ISA_SPEC_CLASS_DRAFT,		1, 0,  0 },
+  {"zfh",		ISA_SPEC_CLASS_DRAFT,		0, 1,  0 },
+  {"zfhmin",		ISA_SPEC_CLASS_DRAFT,		0, 1,  0 },
   {"zfinx",		ISA_SPEC_CLASS_DRAFT,		1, 0,  0 },
   {"zdinx",		ISA_SPEC_CLASS_DRAFT,		1, 0,  0 },
   {"zqinx",		ISA_SPEC_CLASS_DRAFT,		1, 0,  0 },
@@ -1218,22 +1296,38 @@ static struct riscv_supported_ext riscv_supported_std_z_ext[] =
   {"zvl16384b",		ISA_SPEC_CLASS_DRAFT,		1, 0,  0 },
   {"zvl32768b",		ISA_SPEC_CLASS_DRAFT,		1, 0,  0 },
   {"zvl65536b",		ISA_SPEC_CLASS_DRAFT,		1, 0,  0 },
+  {"zvfh",		ISA_SPEC_CLASS_DRAFT,		0, 1,  0 },
+  {"zvamo",		ISA_SPEC_CLASS_DRAFT,		0, 10, 0 },
+  {"zvlsseg",		ISA_SPEC_CLASS_DRAFT,		0, 10, 0 },
   {NULL, 0, 0, 0, 0}
 };
 
 static struct riscv_supported_ext riscv_supported_std_s_ext[] =
 {
   {"svinval",		ISA_SPEC_CLASS_DRAFT,		1, 0, 0 },
+  {"sscofpmf",		ISA_SPEC_CLASS_DRAFT,		0, 1, 0 },
   {NULL, 0, 0, 0, 0}
 };
 
 static struct riscv_supported_ext riscv_supported_std_h_ext[] =
 {
+  {"h",			ISA_SPEC_CLASS_DRAFT,		1, 0, 0 },
   {NULL, 0, 0, 0, 0}
 };
 
 static struct riscv_supported_ext riscv_supported_std_zxm_ext[] =
 {
+  {NULL, 0, 0, 0, 0}
+};
+
+static struct riscv_supported_ext riscv_supported_nonstd_ext[] =
+{
+  {"xsfvqmaccqoq", ISA_SPEC_CLASS_DRAFT, 0, 1, 0},
+  {"xsfvqmaccdod", ISA_SPEC_CLASS_DRAFT, 0, 1, 0},
+  {"xsfvfhbfmin",  ISA_SPEC_CLASS_DRAFT, 0, 1, 0},
+  {"xsfvfwmaccqqq",ISA_SPEC_CLASS_DRAFT, 0, 1, 0},
+  {"xsfvfnrclipxfqf", ISA_SPEC_CLASS_DRAFT, 0, 1, 0},
+  {"xsfvcp", ISA_SPEC_CLASS_DRAFT, 0, 1, 0},
   {NULL, 0, 0, 0, 0}
 };
 
@@ -1244,6 +1338,7 @@ const struct riscv_supported_ext *riscv_all_supported_ext[] =
   riscv_supported_std_s_ext,
   riscv_supported_std_h_ext,
   riscv_supported_std_zxm_ext,
+  riscv_supported_nonstd_ext,
   NULL
 };
 
@@ -1504,8 +1599,7 @@ riscv_get_default_ext_version (enum riscv_spec_class *default_isa_spec,
     case RV_ISA_CLASS_Z: table = riscv_supported_std_z_ext; break;
     case RV_ISA_CLASS_S: table = riscv_supported_std_s_ext; break;
     case RV_ISA_CLASS_H: table = riscv_supported_std_h_ext; break;
-    case RV_ISA_CLASS_X:
-      break;
+    case RV_ISA_CLASS_X: table = riscv_supported_nonstd_ext; break;
     default:
       table = riscv_supported_std_ext;
     }
@@ -1732,7 +1826,6 @@ riscv_parse_prefixed_ext (riscv_parse_subset_t *rps,
 {
   int major_version;
   int minor_version;
-  const char *last_name;
   enum riscv_prefix_ext_class class;
 
   while (*p)
@@ -1805,28 +1898,6 @@ riscv_parse_prefixed_ext (riscv_parse_subset_t *rps,
 	  rps->error_handler
 	    (_("%s: unknown prefixed ISA extension `%s'"),
 	     arch, subset);
-	  free (subset);
-	  return NULL;
-	}
-
-      /* Check that the extension isn't duplicate.  */
-      last_name = rps->subset_list->tail->name;
-      if (!strcasecmp (last_name, subset))
-	{
-	  rps->error_handler
-	    (_("%s: duplicate prefixed ISA extension `%s'"),
-	     arch, subset);
-	  free (subset);
-	  return NULL;
-	}
-
-      /* Check that the extension is in expected order.  */
-      if (riscv_compare_subsets (last_name, subset) > 0)
-	{
-	  rps->error_handler
-	    (_("%s: prefixed ISA extension `%s' is not in expected "
-	       "order.  It must come before `%s'"),
-	     arch, subset, last_name);
 	  free (subset);
 	  return NULL;
 	}
@@ -1913,7 +1984,8 @@ riscv_parse_check_conflicts (riscv_parse_subset_t *rps)
 	  && strncmp (s->name, "zve", 3) == 0)
 	support_zve = true;
       if (!support_zvl
-	  && strncmp (s->name, "zvl", 3) == 0)
+	  && strncmp (s->name, "zvl", 3) == 0
+	  && strcmp (s->name, "zvlsseg") != 0)
 	support_zvl = true;
       if (support_zve && support_zvl)
 	break;
@@ -2358,6 +2430,16 @@ riscv_multi_subset_supports (riscv_parse_subset_t *rps,
     case INSN_CLASS_Q_OR_ZQINX:
       return (riscv_subset_supports (rps, "q")
 	      || riscv_subset_supports (rps, "zqinx"));
+    case INSN_CLASS_ZFH:
+      return riscv_subset_supports (rps, "zfh");
+    case INSN_CLASS_ZFHMIN:
+      return riscv_subset_supports (rps, "zfhmin");
+    case INSN_CLASS_D_AND_ZFHMIN:
+      return (riscv_subset_supports (rps, "d")
+	      && riscv_subset_supports (rps, "zfhmin") );
+    case INSN_CLASS_Q_AND_ZFHMIN:
+      return (riscv_subset_supports (rps, "q")
+	      && riscv_subset_supports (rps, "zfhmin"));
     case INSN_CLASS_ZBA:
       return riscv_subset_supports (rps, "zba");
     case INSN_CLASS_ZBB:
@@ -2400,8 +2482,29 @@ riscv_multi_subset_supports (riscv_parse_subset_t *rps,
 	      || riscv_subset_supports (rps, "zve64d")
 	      || riscv_subset_supports (rps, "zve64f")
 	      || riscv_subset_supports (rps, "zve32f"));
+    case INSN_CLASS_ZVLSSEG:
+      return (riscv_subset_supports (rps, "v")
+	      || riscv_subset_supports (rps, "zvlsseg")
+	      || riscv_subset_supports (rps, "zve64x")
+	      || riscv_subset_supports (rps, "zve32x"));
+    case INSN_CLASS_ZVAMO:
+      return riscv_subset_supports (rps, "zvamo");
     case INSN_CLASS_SVINVAL:
       return riscv_subset_supports (rps, "svinval");
+    case INSN_CLASS_H:
+      return riscv_subset_supports (rps, "h");
+    case INSN_CLASS_XSFVQMACCQOQ:
+      return riscv_subset_supports (rps, "xsfvqmaccqoq");
+    case INSN_CLASS_XSFVQMACCDOD:
+      return riscv_subset_supports (rps, "xsfvqmaccdod");
+    case INSN_CLASS_XSFVFHBFMIN:
+      return riscv_subset_supports (rps, "xsfvfhbfmin");
+    case INSN_CLASS_XSFVFWNACCQQQ:
+      return riscv_subset_supports (rps, "xsfvfwmaccqqq");
+    case INSN_CLASS_XSFVFNRCLIPXFQF:
+      return riscv_subset_supports (rps, "xsfvfnrclipxfqf");
+    case INSN_CLASS_XSFVCP:
+      return riscv_subset_supports (rps, "xsfvcp");
     default:
       rps->error_handler
         (_("internal: unreachable INSN_CLASS_*"));
